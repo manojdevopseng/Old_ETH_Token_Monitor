@@ -1,0 +1,6 @@
+requests
+python-dotenv
+schedule
+fastapi
+uvicorn[standard]
+websockets

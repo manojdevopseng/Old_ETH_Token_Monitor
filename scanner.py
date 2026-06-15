@@ -35,7 +35,7 @@ from config import (
     MIN_LIQUIDITY_USD,
     MAX_WORKERS,
 )
-from logger import log
+from logger import log, bot_enabled
 
 # ── Event topics ──────────────────────────────────────────────────────────────
 TRANSFER_TOPIC  = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"
@@ -386,7 +386,16 @@ def _process_token(token_address: str) -> dict | None:
 
 _seen:      dict[str, float] = {}
 _seen_lock: threading.Lock   = threading.Lock()
-_SEEN_TTL   = 300  # 5-min dedup per token
+_SEEN_TTL   = 300  # 5-min burst dedup per token
+
+# Option 2 — pre-filter: tokens confirmed non-revival skip the API call entirely
+_not_revival_cache:      dict[str, float] = {}
+_not_revival_cache_lock: threading.Lock   = threading.Lock()
+_NOT_REVIVAL_TTL = 4 * 3600  # 4 hours
+
+# Option 3 — queue dedup: same V4 tx_hash only enters the queue once
+_queued_v4:      set[str]       = set()
+_queued_v4_lock: threading.Lock = threading.Lock()
 
 
 def _should_process(token_address: str) -> bool:
@@ -440,11 +449,17 @@ async def _ws_listen(on_revival: callable) -> None:
                     if not topics:
                         continue
 
+                    if not bot_enabled.is_set():
+                        continue   # scanning paused — discard event
+
                     if log_address == V4_POOL_MANAGER:
                         # V4: resolve tokens via tx receipt (V4 is a singleton)
                         tx_hash = result.get("transactionHash")
                         if tx_hash:
-                            _ws_queue.put_nowait(("v4", tx_hash, on_revival))
+                            with _queued_v4_lock:
+                                if tx_hash not in _queued_v4:
+                                    _queued_v4.add(tx_hash)
+                                    _ws_queue.put_nowait(("v4", tx_hash, on_revival))
 
                     elif topics[0].lower() == V2_SWAP_TOPIC:
                         # V2: log.address IS the pair contract
@@ -482,18 +497,30 @@ def _ws_worker_thread(on_revival: callable) -> None:
 
 def _process_v4_tx(tx_hash: str, on_revival: callable) -> None:
     """V4 path: find tokens from tx receipt, check each for revival."""
+    with _queued_v4_lock:
+        _queued_v4.discard(tx_hash)
     for token in _tokens_from_receipt(tx_hash):
         if _should_process(token):
             _process_and_callback(token, on_revival)
 
 
 def _process_and_callback(token_address: str, on_revival: callable) -> None:
+    # Skip API call if we recently confirmed this token is not a revival
+    now = time.monotonic()
+    with _not_revival_cache_lock:
+        if now - _not_revival_cache.get(token_address, 0) < _NOT_REVIVAL_TTL:
+            return
+
     result = _process_token(token_address)
     if result:
         try:
             on_revival(result)
         except Exception as e:
             log(f"[Scanner] Revival callback error: {e}", "error")
+    else:
+        # Not a revival — cache so we skip the API call for the next 4 hours
+        with _not_revival_cache_lock:
+            _not_revival_cache[token_address] = now
 
 
 def start_ws_listener(on_revival: callable) -> None:

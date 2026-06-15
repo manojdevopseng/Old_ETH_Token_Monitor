@@ -13,11 +13,11 @@ import uvicorn
 from datetime import datetime
 
 from config import SCAN_INTERVAL_MINUTES, WEB_PORT
-from logger import IST, log, update_stats, inc_stat, scan_signal
+from logger import IST, log, update_stats, inc_stat, scan_signal, bot_enabled
 from db import init_db, is_alerted, mark_alerted
 from scanner import scan_for_revivals, start_ws_listener
 from alert import send_revival_alert
-from web import app, register_scan_callback
+from web import app, register_scan_callback, register_stop_callback, register_start_callback
 
 
 # ── Shared revival handler (used by BOTH real-time and backup paths) ─────────
@@ -92,6 +92,10 @@ def _scheduler_loop() -> None:
     _launch_scan()
 
     while True:
+        if not bot_enabled.is_set():
+            time.sleep(1)
+            continue   # scanning paused
+
         # Manual scan requested from dashboard
         if scan_signal.is_set():
             scan_signal.clear()
@@ -117,8 +121,12 @@ def main() -> None:
     init_db()
     log("[DB] Database ready")
 
-    # Register callback so /api/scan (dashboard) can trigger run_scan
+    # Register callbacks so dashboard buttons work
     register_scan_callback(run_scan)
+    register_stop_callback(lambda: (bot_enabled.clear(),
+                                    log("[BOT] Scanning stopped")))
+    register_start_callback(lambda: (bot_enabled.set(),
+                                     log("[BOT] Scanning resumed")))
 
     # ── Thread 1 & 2: Alchemy WebSocket (real-time path) ────────────────────
     start_ws_listener(on_revival=_on_revival)

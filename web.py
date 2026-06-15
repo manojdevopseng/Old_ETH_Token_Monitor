@@ -11,17 +11,24 @@ from typing import Callable
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
 
-from logger import get_log_queue, get_stats, scan_signal
+from logger import get_log_queue, get_stats, scan_signal, get_bot_running
 from db import get_all_tokens
 
 app = FastAPI(title="Uniswap Token Monitor", docs_url=None, redoc_url=None)
 
-# Callback registered by main.py so /api/scan can trigger a scan
-_scan_cb: Callable | None = None
+# Callbacks registered by main.py
+_scan_cb:  Callable | None = None
+_stop_cb:  Callable | None = None
+_start_cb: Callable | None = None
 
-def register_scan_callback(fn: Callable) -> None:
-    global _scan_cb
-    _scan_cb = fn
+def register_scan_callback(fn: Callable)  -> None:
+    global _scan_cb;  _scan_cb  = fn
+
+def register_stop_callback(fn: Callable)  -> None:
+    global _stop_cb;  _stop_cb  = fn
+
+def register_start_callback(fn: Callable) -> None:
+    global _start_cb; _start_cb = fn
 
 
 # ── WebSocket connection manager ─────────────────────────────────────────────
@@ -83,7 +90,8 @@ async def _stats_broadcaster():
     """Push stats snapshot to all clients every 5 seconds."""
     while True:
         if _mgr.count > 0:
-            await _mgr.broadcast({"type": "stats", **get_stats()})
+            await _mgr.broadcast({"type": "stats", **get_stats(),
+                                   "bot_running": get_bot_running()})
         await asyncio.sleep(5)
 
 
@@ -106,7 +114,7 @@ async def _ws(ws: WebSocket):
 
 @app.get("/api/stats")
 def api_stats():
-    return get_stats()
+    return {**get_stats(), "bot_running": get_bot_running()}
 
 
 @app.get("/api/tokens")
@@ -121,6 +129,20 @@ def api_scan():
     else:
         scan_signal.set()
     return {"status": "scan triggered"}
+
+
+@app.post("/api/stop")
+def api_stop():
+    if _stop_cb:
+        _stop_cb()
+    return {"status": "stopped", "bot_running": get_bot_running()}
+
+
+@app.post("/api/start")
+def api_start():
+    if _start_cb:
+        _start_cb()
+    return {"status": "started", "bot_running": get_bot_running()}
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -170,6 +192,10 @@ a{color:inherit;text-decoration:none}
      display:inline-flex;align-items:center;gap:6px;transition:background .15s}
 .btn:hover{background:var(--bg4)}
 .btn i{font-size:15px;color:var(--green)}
+.btn-stop{border-color:rgba(248,81,73,.4)}
+.btn-stop i{color:var(--red)}
+.btn-start{border-color:rgba(63,185,80,.4)}
+.btn-start i{color:var(--green)}
 
 .stats{display:grid;grid-template-columns:repeat(5,1fr);gap:12px;margin-bottom:18px}
 .stat{background:var(--bg2);border:1px solid var(--br);border-radius:10px;padding:14px 16px}
@@ -231,6 +257,9 @@ tr:hover td{background:rgba(255,255,255,.02)}
   </div>
   <div class="tr">
     <div class="ws-badge" id="wsbadge">Connecting...</div>
+    <button class="btn btn-stop" id="toggleBtn" onclick="toggleBot()">
+      <i class="ti ti-player-stop" id="toggleIcon"></i><span id="toggleLabel">Stop</span>
+    </button>
     <button class="btn" onclick="triggerScan()">
       <i class="ti ti-refresh"></i>Scan Now
     </button>
@@ -356,6 +385,31 @@ function updStats(d) {
     document.getElementById('s3b').textContent = parts[0] || '';
   }
   if (d.next_scan_secs > 0) startCountdown(d.next_scan_secs);
+  if (d.bot_running !== undefined) setBotState(d.bot_running);
+}
+
+function setBotState(running) {
+  var btn   = document.getElementById('toggleBtn');
+  var icon  = document.getElementById('toggleIcon');
+  var label = document.getElementById('toggleLabel');
+  if (running) {
+    btn.className = 'btn btn-stop';
+    icon.className = 'ti ti-player-stop';
+    label.textContent = 'Stop';
+  } else {
+    btn.className = 'btn btn-start';
+    icon.className = 'ti ti-player-play';
+    label.textContent = 'Start';
+  }
+}
+
+function toggleBot() {
+  var running = document.getElementById('toggleLabel').textContent === 'Stop';
+  var url = running ? '/api/stop' : '/api/start';
+  fetch(url, {method:'POST'}).then(function(r){ return r.json(); }).then(function(d){
+    setBotState(d.bot_running);
+    addLog({msg: running ? '[BOT] Scanning stopped' : '[BOT] Scanning resumed', level: 'info'});
+  }).catch(function(){});
 }
 
 function startCountdown(secs) {

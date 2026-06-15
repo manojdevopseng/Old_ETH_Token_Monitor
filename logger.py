@@ -80,3 +80,11 @@ def get_stats() -> dict:
 
 # ── Scan-now signal (web /api/scan → scheduler loop) ────────────────────────
 scan_signal: threading.Event = threading.Event()
+
+# ── Bot on/off flag (Stop/Start button → scanner + scheduler) ────────────────
+bot_enabled: threading.Event = threading.Event()
+bot_enabled.set()   # scanning active by default
+
+
+def get_bot_running() -> bool:
+    return bot_enabled.is_set()

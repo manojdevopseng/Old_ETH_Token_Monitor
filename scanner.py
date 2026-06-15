@@ -141,7 +141,8 @@ def _tokens_from_receipt(tx_hash: str) -> list[str]:
                 if addr and addr not in SKIP_TOKENS:
                     tokens.add(addr)
         result = list(tokens)
-    except Exception:
+    except Exception as e:
+        log(f"[Scanner] Receipt fetch failed {tx_hash[:10]}...: {e}", "warn")
         result = []
 
     with _receipt_cache_lock:

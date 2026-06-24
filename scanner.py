@@ -505,11 +505,16 @@ def _process_v4_tx(tx_hash: str, on_revival: callable) -> None:
 
 
 def _process_and_callback(token_address: str, on_revival: callable) -> None:
-    # Skip API call if we recently confirmed this token is not a revival
+    # Skip API call if we recently processed this token (revival or not)
     now = time.monotonic()
     with _not_revival_cache_lock:
         if now - _not_revival_cache.get(token_address, 0) < _NOT_REVIVAL_TTL:
             return
+
+    # Brief pause so Alchemy's indexer catches up with the WebSocket event —
+    # without this, alchemy_getAssetTransfers may still return the pre-block
+    # state and show a stale 3-day gap on a token we already alerted.
+    time.sleep(3)
 
     result = _process_token(token_address)
     if result:
@@ -517,10 +522,12 @@ def _process_and_callback(token_address: str, on_revival: callable) -> None:
             on_revival(result)
         except Exception as e:
             log(f"[Scanner] Revival callback error: {e}", "error")
-    else:
-        # Not a revival — cache so we skip the API call for the next 4 hours
-        with _not_revival_cache_lock:
-            _not_revival_cache[token_address] = now
+
+    # Cache regardless of outcome — revival tokens are cached too so we don't
+    # re-hit the API every 5 min and risk a duplicate alert before is_alerted
+    # cooldown expires.
+    with _not_revival_cache_lock:
+        _not_revival_cache[token_address] = time.monotonic()
 
 
 def start_ws_listener(on_revival: callable) -> None:

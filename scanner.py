@@ -85,7 +85,8 @@ def _next_alchemy_url() -> str:
         return next(_alchemy_cycle)
 
 
-log(f"[Scanner] Alchemy-only mode — {len(ALCHEMY_HTTP_URLS)} account(s) in rotation")
+log(f"[Scanner] Alchemy HTTP — {len(ALCHEMY_HTTP_URLS)} account(s) in rotation")
+log(f"[Scanner] Alchemy WS  — {'dedicated account' if ALCHEMY_WS_URL != ALCHEMY_HTTP_URL else 'shared with HTTP key 1'}")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -94,7 +95,7 @@ log(f"[Scanner] Alchemy-only mode — {len(ALCHEMY_HTTP_URLS)} account(s) in rot
 
 def _rpc(method: str, params: list):
     resp = requests.post(
-        ALCHEMY_HTTP_URL,
+        _next_alchemy_url(),
         json={"jsonrpc": "2.0", "id": 1, "method": method, "params": params},
         timeout=20,
     )
@@ -113,7 +114,7 @@ def _alchemy_logs(params: dict) -> list:
     """
     try:
         resp = requests.post(
-            ALCHEMY_HTTP_URL,
+            _next_alchemy_url(),
             json={"jsonrpc": "2.0", "id": 1, "method": "eth_getLogs", "params": [params]},
             timeout=20,
         )

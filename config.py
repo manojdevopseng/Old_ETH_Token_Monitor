@@ -49,4 +49,4 @@ ALERT_COOLDOWN_DAYS   = int(os.getenv("ALERT_COOLDOWN_DAYS", "7"))
 MAX_WORKERS           = int(os.getenv("MAX_WORKERS", "4"))
 
 # ── Dashboard ─────────────────────────────────────────────────────────────────
-WEB_PORT              = int(os.getenv("WEB_PORT", "8000"))
+WEB_PORT              = int(os.getenv("WEB_PORT", "8001"))

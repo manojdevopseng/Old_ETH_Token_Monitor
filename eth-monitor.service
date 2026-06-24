@@ -1,0 +1,17 @@
+[Unit]
+Description=Old ETH Token Monitor Bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/Old_ETH_Token_Monitor
+ExecStart=/home/ubuntu/Old_ETH_Token_Monitor/venv/bin/python main.py
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

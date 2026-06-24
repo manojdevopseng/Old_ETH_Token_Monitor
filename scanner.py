@@ -34,6 +34,7 @@ from config import (
     ALCHEMY_HTTP_URL,
     ALCHEMY_HTTP_URLS,
     ALCHEMY_WS_URL,
+    ALCHEMY_WS_URLS,
     REVIVAL_GAP_DAYS,
     MIN_LIQUIDITY_USD,
     MAX_WORKERS,
@@ -75,9 +76,13 @@ V4_LOOKBACK     = 9   # blocks — Alchemy free tier: max 10-block range for eth
 # 2 concurrent × 150 CU = 300 CU/sec — safely under the limit.
 _alchemy_sem = threading.Semaphore(2)
 
-# Round-robin across all configured Alchemy accounts
-_alchemy_cycle     = itertools.cycle(ALCHEMY_HTTP_URLS)
+# Round-robin across all configured Alchemy accounts (HTTP)
+_alchemy_cycle      = itertools.cycle(ALCHEMY_HTTP_URLS)
 _alchemy_cycle_lock = threading.Lock()
+
+# Round-robin across all configured Alchemy accounts (WebSocket — rotates on reconnect)
+_ws_cycle      = itertools.cycle(ALCHEMY_WS_URLS)
+_ws_cycle_lock = threading.Lock()
 
 
 def _next_alchemy_url() -> str:
@@ -85,8 +90,13 @@ def _next_alchemy_url() -> str:
         return next(_alchemy_cycle)
 
 
+def _next_ws_url() -> str:
+    with _ws_cycle_lock:
+        return next(_ws_cycle)
+
+
 log(f"[Scanner] Alchemy HTTP — {len(ALCHEMY_HTTP_URLS)} account(s) in rotation")
-log(f"[Scanner] Alchemy WS  — {'dedicated account' if ALCHEMY_WS_URL != ALCHEMY_HTTP_URL else 'shared with HTTP key 1'}")
+log(f"[Scanner] Alchemy WS  — {len(ALCHEMY_WS_URLS)} account(s) in rotation")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -444,14 +454,15 @@ async def _ws_listen(on_revival: callable) -> None:
     import websockets
 
     while True:
+        ws_url = _next_ws_url()
         try:
             async with websockets.connect(
-                ALCHEMY_WS_URL,
+                ws_url,
                 ping_interval=20,
                 ping_timeout=30,
             ) as ws:
                 await ws.send(_WS_SUBSCRIBE)
-                log("[Scanner] WebSocket connected — V4 PoolManager + V2 pair Swap events")
+                log(f"[Scanner] WebSocket connected — ...{ws_url[-6:]}")
 
                 async for raw in ws:
                     msg    = json.loads(raw)

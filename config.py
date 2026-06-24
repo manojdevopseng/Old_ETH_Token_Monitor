@@ -45,10 +45,29 @@ ALCHEMY_HTTP_URLS: list[str] = [
     if url
 ]
 
-# Dedicated WebSocket account — paste wss:// URL of a separate Alchemy account
-# If not set, WebSocket shares the primary HTTP account
-_raw_ws = os.getenv("ALCHEMY_WS_URL", "").strip()
-ALCHEMY_WS_URL: str = _to_ws(_raw_ws) if _raw_ws else _to_ws(_raw_primary)
+# WebSocket URLs — rotated on each reconnect across all configured accounts
+# Supports ALCHEMY_WS_URL, ALCHEMY_WS_URL_2 ... ALCHEMY_WS_URL_5
+# Falls back to deriving from HTTP keys if WS URLs not explicitly set
+def _ws_fallback(idx: int) -> str:
+    http_keys = [
+        _raw_primary,
+        os.getenv("ALCHEMY_API_KEY_2", "").strip(),
+        os.getenv("ALCHEMY_API_KEY_3", "").strip(),
+        os.getenv("ALCHEMY_API_KEY_4", "").strip(),
+        os.getenv("ALCHEMY_API_KEY_5", "").strip(),
+    ]
+    k = http_keys[idx] if idx < len(http_keys) else ""
+    return _to_ws(k) if k else ""
+
+_raw_ws_keys = [
+    os.getenv("ALCHEMY_WS_URL",   "").strip() or _ws_fallback(0),
+    os.getenv("ALCHEMY_WS_URL_2", "").strip() or _ws_fallback(1),
+    os.getenv("ALCHEMY_WS_URL_3", "").strip() or _ws_fallback(2),
+    os.getenv("ALCHEMY_WS_URL_4", "").strip() or _ws_fallback(3),
+    os.getenv("ALCHEMY_WS_URL_5", "").strip() or _ws_fallback(4),
+]
+ALCHEMY_WS_URLS: list[str] = [_to_ws(u) for u in _raw_ws_keys if u]
+ALCHEMY_WS_URL:  str       = ALCHEMY_WS_URLS[0]  # primary (for backward compat)
 
 # ── Telegram ──────────────────────────────────────────────────────────────────
 TELEGRAM_BOT_TOKEN    = os.getenv("TELEGRAM_BOT_TOKEN", "")

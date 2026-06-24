@@ -20,16 +20,23 @@ if not ETHERSCAN_API_KEYS:
     warnings.warn("No ETHERSCAN_API_KEY_* set — Etherscan features disabled (scanner uses Alchemy)")
 
 # ── Alchemy ───────────────────────────────────────────────────────────────────
-# Supports multiple accounts for round-robin rotation.
-# Primary key: ALCHEMY_API_KEY (required)
-# Extra keys:  ALCHEMY_API_KEY_2, ALCHEMY_API_KEY_3, ... (optional)
-ALCHEMY_HTTP_URL: str = os.getenv("ALCHEMY_API_KEY", "").strip()
-if not ALCHEMY_HTTP_URL:
+# Accepts both https:// and wss:// URLs — wss:// is auto-converted to https://
+# for HTTP calls. Paste whichever URL Alchemy shows you.
+def _to_http(url: str) -> str:
+    return url.replace("wss://", "https://").replace("ws://", "http://")
+
+def _to_ws(url: str) -> str:
+    return url.replace("https://", "wss://").replace("http://", "ws://")
+
+_raw_primary = os.getenv("ALCHEMY_API_KEY", "").strip()
+if not _raw_primary:
     raise ValueError("ALCHEMY_API_KEY must be set in .env")
 
+ALCHEMY_HTTP_URL: str = _to_http(_raw_primary)
+
 ALCHEMY_HTTP_URLS: list[str] = [
-    url for url in [
-        ALCHEMY_HTTP_URL,
+    _to_http(url) for url in [
+        _raw_primary,
         os.getenv("ALCHEMY_API_KEY_2", "").strip(),
         os.getenv("ALCHEMY_API_KEY_3", "").strip(),
         os.getenv("ALCHEMY_API_KEY_4", "").strip(),
@@ -38,12 +45,10 @@ ALCHEMY_HTTP_URLS: list[str] = [
     if url
 ]
 
-# Use ALCHEMY_WS_URL if explicitly set, else derive from primary HTTP URL
-ALCHEMY_WS_URL: str = os.getenv("ALCHEMY_WS_URL", "").strip() or (
-    ALCHEMY_HTTP_URL
-    .replace("https://", "wss://")
-    .replace("http://",  "ws://")
-)
+# Dedicated WebSocket account — paste wss:// URL of a separate Alchemy account
+# If not set, WebSocket shares the primary HTTP account
+_raw_ws = os.getenv("ALCHEMY_WS_URL", "").strip()
+ALCHEMY_WS_URL: str = _to_ws(_raw_ws) if _raw_ws else _to_ws(_raw_primary)
 
 # ── Telegram ──────────────────────────────────────────────────────────────────
 TELEGRAM_BOT_TOKEN    = os.getenv("TELEGRAM_BOT_TOKEN", "")

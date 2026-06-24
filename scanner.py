@@ -28,8 +28,11 @@ import requests
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 
+import itertools
+
 from config import (
     ALCHEMY_HTTP_URL,
+    ALCHEMY_HTTP_URLS,
     ALCHEMY_WS_URL,
     REVIVAL_GAP_DAYS,
     MIN_LIQUIDITY_USD,
@@ -72,7 +75,17 @@ V4_LOOKBACK     = 9   # blocks — Alchemy free tier: max 10-block range for eth
 # 2 concurrent × 150 CU = 300 CU/sec — safely under the limit.
 _alchemy_sem = threading.Semaphore(2)
 
-log("[Scanner] Alchemy-only mode — V4 PoolManager + V2 pairs")
+# Round-robin across all configured Alchemy accounts
+_alchemy_cycle     = itertools.cycle(ALCHEMY_HTTP_URLS)
+_alchemy_cycle_lock = threading.Lock()
+
+
+def _next_alchemy_url() -> str:
+    with _alchemy_cycle_lock:
+        return next(_alchemy_cycle)
+
+
+log(f"[Scanner] Alchemy-only mode — {len(ALCHEMY_HTTP_URLS)} account(s) in rotation")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -310,9 +323,10 @@ def _process_token(token_address: str) -> dict | None:
             }],
         }
         with _alchemy_sem:
+            _url = _next_alchemy_url()
             for _attempt in range(2):
                 try:
-                    resp = requests.post(ALCHEMY_HTTP_URL, json=_payload, timeout=30)
+                    resp = requests.post(_url, json=_payload, timeout=30)
                     break
                 except requests.exceptions.Timeout:
                     if _attempt == 0:

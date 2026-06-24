@@ -20,11 +20,25 @@ if not ETHERSCAN_API_KEYS:
     warnings.warn("No ETHERSCAN_API_KEY_* set — Etherscan features disabled (scanner uses Alchemy)")
 
 # ── Alchemy ───────────────────────────────────────────────────────────────────
+# Supports multiple accounts for round-robin rotation.
+# Primary key: ALCHEMY_API_KEY (required)
+# Extra keys:  ALCHEMY_API_KEY_2, ALCHEMY_API_KEY_3, ... (optional)
 ALCHEMY_HTTP_URL: str = os.getenv("ALCHEMY_API_KEY", "").strip()
 if not ALCHEMY_HTTP_URL:
     raise ValueError("ALCHEMY_API_KEY must be set in .env")
 
-# Use ALCHEMY_WS_URL if explicitly set, else derive from HTTP URL
+ALCHEMY_HTTP_URLS: list[str] = [
+    url for url in [
+        ALCHEMY_HTTP_URL,
+        os.getenv("ALCHEMY_API_KEY_2", "").strip(),
+        os.getenv("ALCHEMY_API_KEY_3", "").strip(),
+        os.getenv("ALCHEMY_API_KEY_4", "").strip(),
+        os.getenv("ALCHEMY_API_KEY_5", "").strip(),
+    ]
+    if url
+]
+
+# Use ALCHEMY_WS_URL if explicitly set, else derive from primary HTTP URL
 ALCHEMY_WS_URL: str = os.getenv("ALCHEMY_WS_URL", "").strip() or (
     ALCHEMY_HTTP_URL
     .replace("https://", "wss://")

@@ -1,4 +1,5 @@
 import os
+import re
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -20,54 +21,53 @@ if not ETHERSCAN_API_KEYS:
     warnings.warn("No ETHERSCAN_API_KEY_* set — Etherscan features disabled (scanner uses Alchemy)")
 
 # ── Alchemy ───────────────────────────────────────────────────────────────────
-# Accepts both https:// and wss:// URLs — wss:// is auto-converted to https://
-# for HTTP calls. Paste whichever URL Alchemy shows you.
+# Add as many keys as you want in .env — no code changes needed.
+#
+# HTTP keys:  ALCHEMY_API_KEY, ALCHEMY_API_KEY_2, ALCHEMY_API_KEY_3, ...
+# WS  keys:   ALCHEMY_WS_URL,  ALCHEMY_WS_URL_2,  ALCHEMY_WS_URL_3,  ...
+#
+# Both https:// and wss:// are accepted — auto-converted as needed.
+# If WS keys are omitted, they are derived from the matching HTTP key.
+
 def _to_http(url: str) -> str:
     return url.replace("wss://", "https://").replace("ws://", "http://")
 
 def _to_ws(url: str) -> str:
     return url.replace("https://", "wss://").replace("http://", "ws://")
 
-_raw_primary = os.getenv("ALCHEMY_API_KEY", "").strip()
-if not _raw_primary:
+def _collect_keys(prefix: str) -> dict[int, str]:
+    """
+    Scan os.environ for all variables matching <prefix> or <prefix>_<N>.
+    Returns {index: raw_value} sorted by index (base key = index 1).
+    """
+    pattern = re.compile(rf'^{re.escape(prefix)}(_(\d+))?$')
+    found: dict[int, str] = {}
+    for name, val in os.environ.items():
+        m = pattern.match(name)
+        if m and val.strip():
+            idx = int(m.group(2)) if m.group(2) else 1
+            found[idx] = val.strip()
+    return found
+
+_http_raw = _collect_keys("ALCHEMY_API_KEY")
+_ws_raw   = _collect_keys("ALCHEMY_WS_URL")
+
+if not _http_raw:
     raise ValueError("ALCHEMY_API_KEY must be set in .env")
 
-ALCHEMY_HTTP_URL: str = _to_http(_raw_primary)
-
+# HTTP rotation list — sorted by key index (ALCHEMY_API_KEY=1, _2=2, ...)
 ALCHEMY_HTTP_URLS: list[str] = [
-    _to_http(url) for url in [
-        _raw_primary,
-        os.getenv("ALCHEMY_API_KEY_2", "").strip(),
-        os.getenv("ALCHEMY_API_KEY_3", "").strip(),
-        os.getenv("ALCHEMY_API_KEY_4", "").strip(),
-        os.getenv("ALCHEMY_API_KEY_5", "").strip(),
-    ]
-    if url
+    _to_http(v) for _, v in sorted(_http_raw.items())
 ]
+ALCHEMY_HTTP_URL: str = ALCHEMY_HTTP_URLS[0]  # primary (backward compat)
 
-# WebSocket URLs — rotated on each reconnect across all configured accounts
-# Supports ALCHEMY_WS_URL, ALCHEMY_WS_URL_2 ... ALCHEMY_WS_URL_5
-# Falls back to deriving from HTTP keys if WS URLs not explicitly set
-def _ws_fallback(idx: int) -> str:
-    http_keys = [
-        _raw_primary,
-        os.getenv("ALCHEMY_API_KEY_2", "").strip(),
-        os.getenv("ALCHEMY_API_KEY_3", "").strip(),
-        os.getenv("ALCHEMY_API_KEY_4", "").strip(),
-        os.getenv("ALCHEMY_API_KEY_5", "").strip(),
-    ]
-    k = http_keys[idx] if idx < len(http_keys) else ""
-    return _to_ws(k) if k else ""
+# WS rotation list — use explicit WS keys if set, else derive from HTTP keys
+ALCHEMY_WS_URLS: list[str] = []
+for idx, http_url in sorted(_http_raw.items()):
+    ws_url = _ws_raw.get(idx, "")           # explicit WS key for this account
+    ALCHEMY_WS_URLS.append(_to_ws(ws_url or http_url))
 
-_raw_ws_keys = [
-    os.getenv("ALCHEMY_WS_URL",   "").strip() or _ws_fallback(0),
-    os.getenv("ALCHEMY_WS_URL_2", "").strip() or _ws_fallback(1),
-    os.getenv("ALCHEMY_WS_URL_3", "").strip() or _ws_fallback(2),
-    os.getenv("ALCHEMY_WS_URL_4", "").strip() or _ws_fallback(3),
-    os.getenv("ALCHEMY_WS_URL_5", "").strip() or _ws_fallback(4),
-]
-ALCHEMY_WS_URLS: list[str] = [_to_ws(u) for u in _raw_ws_keys if u]
-ALCHEMY_WS_URL:  str       = ALCHEMY_WS_URLS[0]  # primary (for backward compat)
+ALCHEMY_WS_URL: str = ALCHEMY_WS_URLS[0]  # primary (backward compat)
 
 # ── Telegram ──────────────────────────────────────────────────────────────────
 TELEGRAM_BOT_TOKEN    = os.getenv("TELEGRAM_BOT_TOKEN", "")

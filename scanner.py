@@ -374,6 +374,12 @@ def _process_token(token_address: str) -> dict | None:
         if len(parsed) < 2:
             return None
 
+        # Gate 1 — most recent transfer must be a buy.
+        # If the latest on-chain activity is a sell, this is not a revival.
+        # Check this first before any expensive gap search.
+        if not _is_buy_transfer(parsed[0][1]):
+            return None
+
         # Find the largest gap between consecutive transfers.
         # parsed[i] is newer than parsed[i+1] (desc order).
         best_gap_secs = 0
@@ -393,8 +399,8 @@ def _process_token(token_address: str) -> dict | None:
         if gap_days < REVIVAL_GAP_DAYS:
             return None
 
-        # The transfer at parsed[best_i] is the first buy AFTER the gap.
-        # It must be a buy (pool/router sent tokens to user).
+        # Gate 2 — the transfer immediately after the gap must also be a buy
+        # (the first transaction resuming activity after dormancy).
         revival_transfer = parsed[best_i][1]
         if not _is_buy_transfer(revival_transfer):
             return None

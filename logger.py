@@ -20,21 +20,55 @@ os.makedirs(_LOG_DIR, exist_ok=True)
 _file_logger = logging.getLogger("bot")
 _file_logger.setLevel(logging.DEBUG)
 
+# Monthly rotation — one file per month, keep last 12 months
 _handler = TimedRotatingFileHandler(
     filename    = _LOG_FILE,
-    when        = "midnight",   # rotate at midnight IST (close enough — UTC midnight)
-    interval    = 1,
-    backupCount = 7,            # keep last 7 days
+    when        = "midnight",
+    interval    = 30,           # rotate every 30 days (~monthly)
+    backupCount = 12,           # keep last 12 rotated files
     encoding    = "utf-8",
     utc         = False,
 )
-_handler.suffix  = "%Y-%m-%d"
+_handler.suffix  = "%Y-%m"
 _handler.setFormatter(logging.Formatter("%(message)s"))
 _file_logger.addHandler(_handler)
 
 
+# ── In-memory ring buffer — persists across WebSocket reconnects ─────────────
+# Loaded from log file on startup so dashboard shows history after bot restart.
+_HISTORY_LINES = 500
+_log_history: list[dict] = []
+_log_history_lock = threading.Lock()
+
+
+def _load_history_from_file() -> None:
+    """Read last _HISTORY_LINES lines from bot.log into memory on startup."""
+    if not os.path.exists(_LOG_FILE):
+        return
+    try:
+        with open(_LOG_FILE, "r", encoding="utf-8") as f:
+            lines = f.readlines()
+        for raw in lines[-_HISTORY_LINES:]:
+            raw = raw.rstrip("\n")
+            if not raw:
+                continue
+            level = "warn" if "[ERROR]" in raw or "error" in raw.lower() else \
+                    "warn"  if "[WARN]"  in raw or "warn"  in raw.lower() else "info"
+            # Strip timestamp prefix for display (keep it readable in dashboard)
+            _log_history.append({"msg": raw, "level": level})
+    except Exception:
+        pass
+
+
+_load_history_from_file()
+
+
 # ── Log queue (scanner/main → WebSocket broadcaster) ────────────────────────
 _log_q: queue.Queue = queue.Queue()
+
+# Pre-fill queue with history so late-connecting dashboard gets past logs too
+for _entry in _log_history:
+    _log_q.put_nowait(_entry)
 
 
 def log(msg: str, level: str = "info") -> None:
@@ -43,13 +77,24 @@ def log(msg: str, level: str = "info") -> None:
     line     = f"[{ts_short}] {msg}"
     full     = f"[{ts_long}] {msg}"
 
-    print(full)                          # console
-    _file_logger.info(full)              # logs/bot.log  (with daily rotation)
+    print(full)                          # console / systemd journal
+    _file_logger.info(full)             # logs/bot.log  (monthly rotation)
+
+    entry = {"msg": full, "level": level}
+    with _log_history_lock:
+        _log_history.append(entry)
+        if len(_log_history) > _HISTORY_LINES:
+            _log_history.pop(0)
     _log_q.put_nowait({"msg": line, "level": level})  # WebSocket dashboard
 
 
 def get_log_queue() -> queue.Queue:
     return _log_q
+
+
+def get_log_history() -> list[dict]:
+    with _log_history_lock:
+        return list(_log_history)
 
 
 # ── Live stats (updated by main, read by /api/stats) ────────────────────────

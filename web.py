@@ -5,13 +5,12 @@ Imported by main.py; never imports from main.py (avoids circular import).
 import asyncio
 import json
 import threading
-from collections import deque
 from typing import Callable
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
 
-from logger import get_log_queue, get_stats, scan_signal, get_bot_running
+from logger import get_log_queue, get_stats, scan_signal, get_bot_running, get_log_history
 from db import get_all_tokens
 
 app = FastAPI(title="Uniswap Token Monitor", docs_url=None, redoc_url=None)
@@ -60,10 +59,6 @@ class _Manager:
 
 _mgr = _Manager()
 
-# Ring buffer — last 300 log lines kept so late-connecting browsers get history
-_log_buffer: deque = deque(maxlen=300)
-
-
 # ── Background async tasks ───────────────────────────────────────────────────
 
 @app.on_event("startup")
@@ -73,13 +68,12 @@ async def _startup():
 
 
 async def _log_broadcaster():
-    """Drain the log queue, buffer every entry, and push to all WebSocket clients."""
+    """Drain the log queue and push new entries to all connected WebSocket clients."""
     q = get_log_queue()
     while True:
         while True:
             try:
                 item = q.get_nowait()
-                _log_buffer.append(item)          # keep in ring buffer for late clients
                 await _mgr.broadcast({"type": "log", **item})
             except Exception:
                 break
@@ -100,8 +94,8 @@ async def _stats_broadcaster():
 @app.websocket("/ws")
 async def _ws(ws: WebSocket):
     await _mgr.connect(ws)
-    # Replay buffered log history so late-connecting browsers see past output
-    for item in list(_log_buffer):
+    # Replay full log history (from file + runtime) so browser sees past logs after restart
+    for item in get_log_history():
         await ws.send_text(json.dumps({"type": "log", **item}))
     # Send current stats immediately on connect
     await ws.send_text(json.dumps({"type": "stats", **get_stats()}))

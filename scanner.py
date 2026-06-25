@@ -3,7 +3,7 @@ Alchemy-only detection — no Etherscan in the hot path.
 
   V4 (dominant)  WebSocket → V4 PoolManager Swap events
                              → eth_getTransactionReceipt → ERC-20 Transfer logs → token
-                             → alchemy_getAssetTransfers (last 2 txns) → gap check
+                             → alchemy_getAssetTransfers (last 20 txns) → max gap check
 
   V2 (small)     WebSocket → V2 Pair Swap events
                              → eth_call token0/token1 on pair → non-stablecoin token
@@ -311,11 +311,16 @@ def _is_buy_transfer(transfer: dict) -> bool:
 
 def _process_token(token_address: str) -> dict | None:
     """
-    Use alchemy_getAssetTransfers to get last 2 ERC-20 transfer events for
-    this token.  Compute gap between them.  If gap >= REVIVAL_GAP_DAYS and
-    liquidity >= MIN_LIQUIDITY_USD: return revival candidate dict.
+    Use alchemy_getAssetTransfers to get last 20 ERC-20 transfers for this
+    token, then find the largest gap between any two consecutive transfers
+    within the recent window.
 
-    This replaces the old Etherscan tokentx call entirely — no rate limits.
+    Why 20 instead of 2: if many buys pile up after a revival, the gap between
+    the last 2 transfers shrinks to minutes — the original revival gap is lost.
+    Fetching 20 lets us find the max gap even if trading resumed hours ago.
+
+    Revival condition: largest gap >= REVIVAL_GAP_DAYS AND the transfer AFTER
+    the gap (i.e. the first buy resuming activity) is a buy.
     """
     try:
         _payload = {
@@ -323,14 +328,14 @@ def _process_token(token_address: str) -> dict | None:
             "id":      1,
             "method":  "alchemy_getAssetTransfers",
             "params":  [{
-                "fromBlock":        "0x0",
-                "toBlock":          "latest",
+                "fromBlock":         "0x0",
+                "toBlock":           "latest",
                 "contractAddresses": [token_address],
-                "category":         ["erc20"],
-                "order":            "desc",
-                "maxCount":         "0x2",
-                "withMetadata":     True,
-                "excludeZeroValue": True,
+                "category":          ["erc20"],
+                "order":             "desc",
+                "maxCount":          "0x14",   # 20 transfers
+                "withMetadata":      True,
+                "excludeZeroValue":  True,
             }],
         }
         with _alchemy_sem:
@@ -345,37 +350,58 @@ def _process_token(token_address: str) -> dict | None:
                     else:
                         raise
         resp.raise_for_status()
-        data      = resp.json()
+        data = resp.json()
         if "error" in data:
             return None
 
-        result    = data.get("result") or {}        # guard against result:null
+        result    = data.get("result") or {}
         transfers = result.get("transfers", [])
         if len(transfers) < 2:
             return None
 
-        t0, t1 = transfers[0], transfers[1]
+        # Parse timestamps for all transfers (desc order: newest first)
+        parsed: list[tuple[datetime, dict]] = []
+        for t in transfers:
+            ts_str = t.get("metadata", {}).get("blockTimestamp", "")
+            if not ts_str:
+                continue
+            try:
+                ts = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
+                parsed.append((ts, t))
+            except Exception:
+                continue
 
-        if not _is_buy_transfer(t0):
-            return None   # most recent transfer is a sell — skip, not a revival
-
-        ts0_str = t0.get("metadata", {}).get("blockTimestamp", "")
-        ts1_str = t1.get("metadata", {}).get("blockTimestamp", "")
-        if not ts0_str or not ts1_str:
+        if len(parsed) < 2:
             return None
 
-        ts0 = datetime.fromisoformat(ts0_str.replace("Z", "+00:00"))
-        ts1 = datetime.fromisoformat(ts1_str.replace("Z", "+00:00"))
+        # Find the largest gap between consecutive transfers.
+        # parsed[i] is newer than parsed[i+1] (desc order).
+        best_gap_secs = 0
+        best_i        = -1
+        for i in range(len(parsed) - 1):
+            gap = (parsed[i][0] - parsed[i + 1][0]).total_seconds()
+            if gap > best_gap_secs:
+                best_gap_secs = gap
+                best_i        = i
 
-        gap_secs = (ts0 - ts1).total_seconds()
-        if gap_secs <= 0:
+        if best_i < 0 or best_gap_secs <= 0:
             return None
 
-        gap_days  = int(gap_secs // 86400)
-        gap_hours = int((gap_secs % 86400) // 3600)
+        gap_days  = int(best_gap_secs // 86400)
+        gap_hours = int((best_gap_secs % 86400) // 3600)
 
         if gap_days < REVIVAL_GAP_DAYS:
             return None
+
+        # The transfer at parsed[best_i] is the first buy AFTER the gap.
+        # It must be a buy (pool/router sent tokens to user).
+        revival_transfer = parsed[best_i][1]
+        if not _is_buy_transfer(revival_transfer):
+            return None
+
+        # Timestamps: revival buy → last inactive transfer
+        ts_revival  = parsed[best_i][0]
+        ts_before   = parsed[best_i + 1][0]
 
         if MIN_LIQUIDITY_USD > 0:
             liquidity = _check_liquidity(token_address)
@@ -384,16 +410,16 @@ def _process_token(token_address: str) -> dict | None:
                     f"liquidity ${liquidity:,.0f} < ${MIN_LIQUIDITY_USD:,.0f}")
                 return None
 
-        symbol         = t0.get("asset") or "???"
-        name           = _get_token_name(token_address) or symbol
+        symbol              = revival_transfer.get("asset") or "???"
+        name                = _get_token_name(token_address) or symbol
         tier_name, tier_emoji = _gap_tier(gap_days)
 
         return {
             "token_address": token_address,
             "token_name":    name,
             "token_symbol":  symbol,
-            "tx0_datetime":  ts0.strftime("%Y-%m-%d %H:%M:%S UTC"),
-            "tx1_datetime":  ts1.strftime("%Y-%m-%d %H:%M:%S UTC"),
+            "tx0_datetime":  ts_revival.strftime("%Y-%m-%d %H:%M:%S UTC"),
+            "tx1_datetime":  ts_before.strftime("%Y-%m-%d %H:%M:%S UTC"),
             "gap_days":      gap_days,
             "gap_hours":     gap_hours,
             "tier_name":     tier_name,

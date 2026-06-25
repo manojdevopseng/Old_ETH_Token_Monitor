@@ -403,6 +403,13 @@ def _process_token(token_address: str) -> dict | None:
         ts_revival  = parsed[best_i][0]
         ts_before   = parsed[best_i + 1][0]
 
+        # Stale revival guard — if the revival buy happened more than 48 hours
+        # ago, skip it. This prevents false alerts when the bot was down and
+        # restarts days later, finding old gaps in the 20-transfer window.
+        revival_age_hours = (datetime.now(timezone.utc) - ts_revival).total_seconds() / 3600
+        if revival_age_hours > 48:
+            return None
+
         if MIN_LIQUIDITY_USD > 0:
             liquidity = _check_liquidity(token_address)
             if liquidity < MIN_LIQUIDITY_USD:
